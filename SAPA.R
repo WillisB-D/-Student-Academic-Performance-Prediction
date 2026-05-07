@@ -1,0 +1,465 @@
+#' ---
+#' title: "Student Academic Performance Prediction"
+#' author: "Emily Chiu & Willis Dongmo"
+#' date: "April 2026"
+#' output:
+#'   html_document: default
+#'   pdf_document: default
+#' ---
+#' 
+## ----setup, include=FALSE-----------------------------------------------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+#' 
+#' ## Project Overview
+#' 
+#' Binary classification to predict student pass/fail outcomes using behavioral, 
+#' contextual, and academic predictors. Compares Regularized Logistic Regression 
+#' and Random Forest.
+#' 
+#' ## Introduction and Objective
+#' 
+#' This project analyzes a student academic performance dataset containing  10,000 observations and multiple features related to study habits, attendance, academic background, and student context. The dataset also includes three outcome variables: GPA, grade category (A–F), and pass/fail status. The dataset is available here : https://www.kaggle.com/datasets/sadiajavedd/student-academic-performance
+#' 
+#' The primary objective of this project is to predict whether a student passes or fails, using the existing pass/fail variable as the binary target. This problem is framed as a supervised classification task, with the broader goal of identifying the key factors associated with student success and building models that can support early academic intervention.
+#' 
+#' To achieve this, two machine learning methods presented in class will be compared:
+#' 
+#' *Logistic Regression with Regularization, chosen as an interpretable baseline model that estimates the probability of passing while reducing overfitting through regularization.
+#' *Random Forest, selected as a flexible ensemble model capable of capturing non-linear relationships and feature interactions.
+#' 
+#' These two methods provide a meaningful comparison between a linear probabilistic classifier and a more complex tree-based approach.
+#' 
+#' The predictor variables include student-related academic and behavioral features, while GPA and grade category are excluded from the predictors to avoid data leakage, since they are strongly related to the target outcome.
+#' 
+#' The analysis will proceed through the following stages:
+#' 
+#' -Data loading and initial structure inspection
+#' -Dataset cleaning and preparation
+#' -Brief exploratory data analysis (EDA)
+#' -Train/test split
+#' -Model training and hyperparameter tuning
+#' -Performance evaluation using classification metrics
+#' -Final comparison of Logistic Regression and Random Forest
+#' 
+#' ## Data Loading and Initial Structure Inspection
+#' 
+#' This section loads the dataset and provides an initial overview of its structure, including variable names, data types, and dimensions.
+#' 
+#' 
+## -----------------------------------------------------------------------------------------------------------------
+library(here)
+dfi <- read.csv(here("student_exam_performance_dataset (1).csv"))
+dim(dfi)
+head(dfi)
+str(dfi)
+
+
+#' ## Missing Values, Outlier Screening, and Final Dataset Formatting
+#' ### Missing Values
+#' 
+## -----------------------------------------------------------------------------------------------------------------
+# Check missing values
+missing_counts <- colSums(is.na(dfi))
+missing_counts
+sum(missing_counts)
+
+#' 
+#' We first checked for missing values across all variables.
+#' 
+#' No missing values were detected. \
+#' No imputation was required. \
+#' No rows were removed at this stage. 
+#' 
+#' ### Outlier Screening
+#' 
+#' 
+#' Because several variables (scores, GPA, attendance, and completion rates) are naturally bounded by well-defined academic scales, range validation was considered sufficient for these features.
+#' 
+#' Extreme values within valid ranges (e.g., 0 or 100) were treated as plausible observations.
+#' These values were retained because they may represent very strong or very weak student performance.
+#' Additional outlier screening was focused only on less strictly bounded behavioral variables: \
+#' - study hours \
+#' - age \
+#' - sleep duration \
+#' - social media usage
+#' 
+#' 
+## -----------------------------------------------------------------------------------------------------------------
+# Check age range
+range(dfi$age, na.rm = TRUE)
+summary(dfi$age)
+
+# Variables selected for outlier screening
+outlier_vars <- c("study_hours_per_day", "sleep_hours", "social_media_hours")
+
+outlier_summary <- data.frame(
+  Feature = character(),
+  Min = numeric(),
+  Max = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (col in outlier_vars) {
+  outlier_summary <- rbind(
+    outlier_summary,
+    data.frame(
+      Feature = col,
+      Min = min(dfi[[col]], na.rm = TRUE),
+      Max = max(dfi[[col]], na.rm = TRUE)
+    )
+  )
+}
+
+outlier_summary
+
+## -----------------------------------------------------------------------------------------------------------------
+# Check discrete count variable separately
+range(dfi$online_courses_completed, na.rm = TRUE)
+table(dfi$online_courses_completed)
+
+#' 
+#' ### Dataset Formatting
+#' 
+#' At this stage, variables were reviewed and formatted to ensure consistency before modeling.
+#' 
+#' ### Final Dataset
+#' The final modeling dataset was created after removing variables with no predictive value or variables that could introduce data leakage.
+#' 
+#' Removed Variables: \
+#' student_id → unique identifier with no predictive meaning \
+#' age → unrealistic range relative to academic levels represented \
+#' final_exam_score → directly tied to pass/fail outcome \ 
+#' previous_gpa → highly reflective of academic performance \
+#' grade_category → directly encodes final academic outcome
+#' 
+#' Removing these variables helps ensure a fair and realistic predictive task.
+## -----------------------------------------------------------------------------------------------------------------
+# Final modeling dataset
+library(tidyverse)
+df_model <- dfi %>%
+  select(
+    -student_id,
+    -age,
+    -final_exam_score,
+    -previous_gpa,
+    -grade_category
+  )
+
+# Convert target and categorical variables
+df_model$pass_fail <- as.factor(df_model$pass_fail)
+
+df_model <- df_model %>%
+  mutate(across(where(is.character), as.factor))
+
+# Final check
+dim(df_model)
+head(df_model)
+
+#' 
+#' 
+#' ### Final Formatting Steps
+#' The target variable pass_fail was converted to a factor. \
+#' All character-based predictors were converted to factors. \
+#' This ensures compatibility with Logistic Regression and Random Forest \
+#' 
+#' ## EDA
+#' 
+#' ### Why These Visualizations?
+#' 
+#' The selected graphs were chosen to directly support the pass/fail prediction objective.
+#' 
+#' Selected Visualizations: \
+#' 1. Target distribution plot \
+#' - checks whether the classes are balanced before modeling \
+#' 2. Boxplots of key numerical variables \
+#' - compare study behavior and academic scores between pass and fail groups \
+#' 3. Proportional bar plots for categorical variables \
+#' - assess whether factors such as tutoring and internet access are associated with pass rates \
+#' 4. Correlation heatmap \
+#' - identifies relationships and possible redundancy among numerical predictors (especially useful for Logistic Regression) 
+#' 
+#' These visualizations help identify which variables appear most informative before model training.
+## -----------------------------------------------------------------------------------------------------------------
+library(ggplot2)
+library(tidyverse)
+library(corrplot)
+
+ggplot(df_model, aes(x = pass_fail, fill = pass_fail)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Pass vs Fail",
+    x = "Pass/Fail",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+## -----------------------------------------------------------------------------------------------------------------
+ggplot(df_model, aes(x = pass_fail, y = study_hours_per_day, fill = pass_fail)) +
+  geom_boxplot() +
+  labs(
+    title = "Study Hours per Day by Pass/Fail",
+    x = "Pass/Fail",
+    y = "Study Hours per Day"
+  ) +
+  theme_minimal()
+
+ggplot(df_model, aes(x = pass_fail, y = attendance_rate, fill = pass_fail)) +
+  geom_boxplot() +
+  labs(
+    title = "Attendance Rate by Pass/Fail",
+    x = "Pass/Fail",
+    y = "Attendance Rate"
+  ) +
+  theme_minimal()
+
+ggplot(df_model, aes(x = pass_fail, y = attendance_rate, fill = pass_fail)) +
+  geom_boxplot() +
+  labs(
+    title = "Attendance Rate by Pass/Fail",
+    x = "Pass/Fail",
+    y = "Attendance Rate"
+  ) +
+  theme_minimal()
+
+ggplot(df_model, aes(x = pass_fail, y = social_media_hours, fill = pass_fail)) +
+  geom_boxplot() +
+  labs(
+    title = "Social Media Hours by Pass/Fail",
+    x = "Pass/Fail",
+    y = "Social Media Hours"
+  ) +
+  theme_minimal()
+
+ggplot(df_model, aes(x = pass_fail, y = math_score, fill = pass_fail)) +
+  geom_boxplot() +
+  labs(
+    title = "Math Score by Pass/Fail",
+    x = "Pass/Fail",
+    y = "Math Score"
+  ) +
+  theme_minimal()
+
+
+
+## -----------------------------------------------------------------------------------------------------------------
+ggplot(df_model, aes(x = tutoring, fill = pass_fail)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Pass/Fail Proportions by Tutoring",
+    x = "Tutoring",
+    y = "Proportion"
+  ) +
+  theme_minimal()
+
+ggplot(df_model, aes(x = internet_access, fill = pass_fail)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Pass/Fail Proportions by Internet Access",
+    x = "Internet Access",
+    y = "Proportion"
+  ) +
+  theme_minimal()
+
+numeric_df <- df_model %>%
+  select(where(is.numeric))
+
+cor_matrix <- cor(numeric_df)
+
+corrplot(cor_matrix, method = "color", tl.cex = 0.7)
+
+#' ## Main Findings and Next Steps
+#' 
+#' The EDA suggests that the dataset contains strong predictive signal.
+#' 
+#' Key observations: \
+#' The target classes are well balanced. \
+#' Students who pass have higher study hours per day. \
+#' Attendance is slightly higher among passing students. \
+#' Social media use tends to be lower among passing students. \
+#' Math score shows the clearest separation, making it a likely strong predictor. \
+#' Tutoring and internet access show weaker isolated effects. \
+#' Subject scores are strongly correlated, suggesting some redundancy among academic variables. 
+#' 
+#' ## Train/Test Split
+#' A stratified 75/25 train-test split was used to preserve the pass/fail class proportions while maintaining random sampling for fair model comparison.
+#' 
+## -----------------------------------------------------------------------------------------------------------------
+
+library(caret)
+
+set.seed(42)
+
+#Train/Test Split
+train_index <- createDataPartition(df_model$pass_fail, p = 0.75, list = FALSE)
+
+train_data <- df_model[train_index, ]
+test_data  <- df_model[-train_index, ]
+prop.table(table(train_data$pass_fail))
+prop.table(table(test_data$pass_fail))
+
+
+#Logistic Regression Data Preparation
+# Create dummy variables
+dummies <- dummyVars(pass_fail ~ ., data = train_data)
+
+x_train_log <- predict(dummies, newdata = train_data)
+x_test_log  <- predict(dummies, newdata = test_data)
+
+# Scale numeric predictors
+preProcValues <- preProcess(x_train_log, method = c("center", "scale"))
+
+x_train_log <- predict(preProcValues, x_train_log)
+x_test_log  <- predict(preProcValues, x_test_log)
+
+y_train <- train_data$pass_fail
+y_test  <- test_data$pass_fail
+
+#Random Forest Data Preparation
+x_train_rf <- train_data
+x_test_rf  <- test_data
+
+#' 
+#' For Logistic Regression, categorical predictors must be converted into dummy variables, and numerical predictors must be standardized so that regularization treats all features on a comparable scale.
+#' 
+#' ## Model 1 — Regularized Logistic Regression with tuning
+#' A 10-fold cross-validation procedure was used on the training set to tune the regularization parameter. The same random seed was maintained throughout the workflow to ensure reproducibility of both the train-test split and the cross-validation folds.
+#' 
+## -----------------------------------------------------------------------------------------------------------------
+library(glmnet)
+library(caret)
+# Convert target into 0/1
+y_train_num <- ifelse(y_train == "Pass", 1, 0)
+y_test_num  <- ifelse(y_test == "Pass", 1, 0)
+
+# Convert X into matrix
+x_train_mat <- as.matrix(x_train_log)
+x_test_mat  <- as.matrix(x_test_log)
+
+#Tuning with cross validation
+set.seed(42)
+
+cv_model <- cv.glmnet(
+  x_train_mat,
+  y_train_num,
+  family = "binomial",
+  alpha = 1,
+  nfolds = 10
+)
+
+#Tuning visualization
+plot(cv_model)
+
+#Best lambda
+best_lambda <- cv_model$lambda.min
+best_lambda
+
+#Training with best lambda(Final model)
+log_model <- glmnet(
+  x_train_mat,
+  y_train_num,
+  family = "binomial",
+  alpha = 1,
+  lambda = best_lambda
+)
+
+#Prediction 
+# Probabilities
+prob_pred <- predict(log_model, newx = x_test_mat, type = "response")
+
+# Conversion to binary class labels (Threshold 0.5)
+pred_class <- ifelse(prob_pred > 0.5, 1, 0)
+
+#Model Evaluation
+confusionMatrix(
+  factor(pred_class),
+  factor(y_test_num)
+)
+#ROC Curve
+library(pROC)
+
+roc_obj <- roc(y_test_num, as.numeric(prob_pred))
+plot(roc_obj, col = "blue", main = "ROC Curve - Logistic Regression")
+auc(roc_obj)
+
+#' 
+#' 
+#' The LASSO-regularized Logistic Regression model achieved strong predictive performance on the test set, with an accuracy of 94.36% and a balanced accuracy of 94.37%. Both sensitivity (94.09%) and specificity (94.65%) indicate that the model performs well in identifying both failing and passing students without bias toward a specific class.
+#' 
+#' The ROC curve further confirms the model’s effectiveness, with an AUC of 0.9904, indicating excellent discrimination ability between the two classes. These results suggest that the selected predictors contain strong predicitive signal for academic success classification.
+#' 
+#' However, the very high performance may also indicate that some predictors, particularly subject scores, are highly correlated with the outcome variable, making the classification task relatively easy.
+#' 
+#' ## Model 2 Random Forest with Hyperparameter Tuning
+#' A Random Forest classifier was trained on the same stratified train-test split. Hyperparameter tuning focused on the number of variables randomly sampled at each split (mtry) to optimize classification performance.
+#' 
+## -----------------------------------------------------------------------------------------------------------------
+library(randomForest)
+library(caret)
+library(pROC)
+
+# Use split data directly for RF
+train_rf <- train_data
+test_rf  <- test_data
+
+# Hyperparameter tuning
+set.seed(42)
+
+rf_tuned <- train(
+  pass_fail ~ .,
+  data = train_rf,
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 5
+)
+
+rf_tuned
+plot(rf_tuned)
+
+# Best mtry
+best_mtry <- rf_tuned$bestTune$mtry
+best_mtry
+
+# Final model
+set.seed(42)
+
+rf_model <- randomForest(
+  pass_fail ~ .,
+  data = train_rf,
+  mtry = best_mtry,
+  importance = TRUE
+)
+
+# Prediction
+rf_pred <- predict(rf_model, newdata = test_rf)
+
+# Confusion matrix
+rf_cm <- confusionMatrix(rf_pred, test_rf$pass_fail)
+rf_cm
+
+# ROC + AUC
+rf_prob <- predict(rf_model, newdata = test_rf, type = "prob")[, "Pass"]
+
+rf_roc <- roc(test_rf$pass_fail, rf_prob)
+plot(rf_roc, col = "darkgreen", main = "ROC Curve - Random Forest")
+auc(rf_roc)
+
+# Variable importance
+varImpPlot(rf_model)
+
+#' 
+#' 
+#' The tuned Random Forest model achieved excellent classification performance, with an accuracy of 94.32%, a balanced accuracy of 94.33%, and an AUC of 0.9875. The optimal hyperparameter value was mtry = 2, indicating that considering a small number of predictors at each split improved tree diversity and overall generalization performance.
+#' 
+#' The variable importance analysis showed that academic subject scores—particularly reading, science, writing, and math scores—were the strongest predictors of pass/fail outcomes. Behavioral variables such as study hours per day also contributed meaningfully, while contextual factors such as tutoring and internet access had weaker isolated influence.
+#' 
+#' Overall, the Random Forest model performed extremely well and confirmed that both academic performance indicators and selected study behaviors contain strong predictive signal for student success classification.
+#' 
+#' ## Conclusion
+#' This project compared LASSO-regularized Logistic Regression and Random Forest for predicting student pass/fail outcomes using behavioral, contextual, and academic predictors.
+#' 
+#' Both models achieved excellent and nearly identical performance, with test accuracies above 94% and AUC values close to 0.99, indicating outstanding discriminative ability. While Random Forest effectively captured non-linear relationships and confirmed the importance of academic subject scores, Logistic Regression delivered slightly better performance while offering significantly greater interpretability.
+#' 
+#' Because the predictive performance difference between the two models is minimal, Logistic Regression is selected as the preferred final model due to its simplicity, transparency, and ease of interpretation. The results also suggest that subject-level academic scores and study habits are the most influential factors in determining student success, with math, reading, science, writing, and study hours emerging as the strongest predictors.
+#' 
+#' One important limitation of this study is that the very high predictive performance may be partly driven by the inclusion of subject-level academic scores, which are strongly related to the final pass/fail outcome. This makes the classification task relatively easy and may limit generalization to settings where only earlier behavioral or contextual predictors are available.

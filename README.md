@@ -15,7 +15,7 @@
 
 **Contributors:**
 - **Willis Dongmo** – Data analysis, modeling, evaluation 
-- **Emily Chiu** – Literature review, model tuning adjustments, explanatory videos
+- **Emily Chiu** – Literature and code review, model tuning adjustments, explanatory videos
 
 ---
 
